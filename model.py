@@ -491,7 +491,7 @@ class ReconstructionNet(torch.nn.Module):
         x_mu, _, kl = self.generator(context_x, context_v, query_x, query_v)
         pools = []
         for i in range(m):
-            pools.append(FeaturePooling(context_x[i])) # Fix dimension
+            pools.append(FeaturePooling(context_x[i])) # TODO Fix dimension
         pools.append(FeaturePooling(x_mu))
 
         pred_points = self.deformation(graph, pools)

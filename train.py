@@ -4,11 +4,12 @@ import torch
 import pickle
 import torch.utils.data as utils
 import torch.optim as optim
+from torch.distributions import Normal
 import time
 import numpy as np
 
 from graph import Graph
-from model import GNet
+from model import ReconstructionNet
 from pool import FeaturePooling
 from metrics import loss_function
 from data import CustomDatasetFolder
@@ -40,10 +41,10 @@ device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 # Model
 if args.load_model is not None: # Continue training
     state_dict = torch.load(args.load_model, map_location=device)
-    model_gcn = GNet()
+    model_gcn = ReconstructionNet(x_dim=3, v_dim=7, r_dim=256, h_dim=128, z_dim=64, L=8)
     model_gcn.load_state_dict(state_dict)
 else:
-    model_gcn = GNet()
+    model_gcn = ReconstructionNet(x_dim=3, v_dim=7, r_dim=256, h_dim=128, z_dim=64, L=8)
 
 # Optimizer
 if args.load_optimizer is not None:
@@ -88,6 +89,8 @@ for epoch in range(1, nb_epochs+1):
         gt_points_list = np.transpose(gt_points_list, (1, 0, 2, 3))
         gt_normals_list = np.transpose(gt_normals_list, (1, 0, 2, 3))
 
+        # TODO Implement Partition context-query
+
         if use_cuda:
             ims = ims.cuda()
             gt_points_list = gt_points_list.cuda()
@@ -100,11 +103,13 @@ for epoch in range(1, nb_epochs+1):
         for i in range(5):
             pools.append(FeaturePooling(ims[i]))
 
-        pred_points = model_gcn(graph, pools)
+        pred_points, kl = model_gcn(graph, pools)
 
         # Loss
         loss = loss_function(pred_points, gt_points_list[0].squeeze(),
                                           gt_normals_list[0].squeeze(), graph)
+
+        # TODO add kl loss once we have viewpoint
 
         # Backward
         loss.backward()
