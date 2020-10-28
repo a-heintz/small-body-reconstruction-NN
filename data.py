@@ -3,6 +3,7 @@ import pickle
 import numpy as np
 import os
 from skimage import io
+from stl import mesh
 
 class CustomDatasetFolder(torch.utils.data.Dataset):
     '''
@@ -10,6 +11,7 @@ class CustomDatasetFolder(torch.utils.data.Dataset):
     '''
     def __init__(self, root, extensions, print_ref=False):
         self.samples = self._make_dataset(root, extensions)
+        self.root = root
         if len(self.samples) == 0:
             raise(RuntimeError("Found 0 files in subfolders of: " + root + "\n"
                                "Supported extensions are: " + ",".join(extensions)))
@@ -21,7 +23,7 @@ class CustomDatasetFolder(torch.utils.data.Dataset):
 
     def __getitem__(self, index):
         path = self.samples[index]
-        ims, points_list, normals_list = self._loader(path)
+        ims, points, normals = self._loader(path)
 
         # Apply small transform
         ims = ims.astype(float)/255.0
@@ -29,8 +31,8 @@ class CustomDatasetFolder(torch.utils.data.Dataset):
         ims = (ims - self.mean)/self.std
 
         return torch.from_numpy(ims).float(), \
-               torch.from_numpy(points_list).float(), \
-               torch.from_numpy(normals_list).float()
+               torch.from_numpy(points).float(), \
+               torch.from_numpy(normals).float()
 
     def __len__(self):
         return len(self.samples)
@@ -39,24 +41,23 @@ class CustomDatasetFolder(torch.utils.data.Dataset):
         if self.print_ref:
             print(path)
         ims = []
-        points_list = []
-        normals_list = []
-        for i in range(5):
-            img_path = path + str(i) + ".png"
-            pkl_path = path + str(i) + ".dat"
-            f = open(pkl_path, 'rb')
-            u = pickle._Unpickler(f)
-            u.encoding = 'latin1'
-            data = u.load()
-            points = data[:, :3]
-            normals = data[:, 3:]
+        for i in range(40):
+            img_path = path
+            if i < 10:
+                img_path += "0"
+            img_path += str(i) + ".png"
             im = io.imread(img_path)
             im[np.where(im[:, :, 3] == 0)] = 255
             im = im[:, :, :3].astype(np.float32)
             ims.append(im)
-            points_list.append(points)
-            normals_list.append(normals)
-        return np.asarray(ims), np.asarray(points_list), np.asarray(normals_list)
+        stl_indices = np.load(self.root + 'state_files/asteroid_choice.npy')
+        stl_index = int(path[-8:-5])
+        stl_files = ['bennu.stl', 'itokawa.stl', 'mithra.stl', 'toutatis.stl']
+        my_mesh = mesh.Mesh.from_file(self.root + 'stl_files/' + stl_files[stl_indices[stl_index]])
+        normals = my_mesh.normals.astype(float)
+        npy_files = ['bennu.npy', 'itokawa.npy', 'mithra.npy', 'toutatis.npy']
+        points = np.load(self.root + 'stl_files/' + npy_files[stl_indices[stl_index]])
+        return np.asarray(ims), np.asarray(points), np.asarray(normals)
 
     def _make_dataset(self, dir, extensions):
         paths = []
@@ -70,7 +71,7 @@ class CustomDatasetFolder(torch.utils.data.Dataset):
                 for fname in sorted(fnames):
                     if self._has_file_allowed_extension(fname, extensions):
                         path = os.path.join(root, fname)
-                        item = path[:-5] # strip away *.dat
+                        item = path[:-6] # strip away **.stl
                         if item != item_visited:
                             item_visited = item
                             paths.append(item)

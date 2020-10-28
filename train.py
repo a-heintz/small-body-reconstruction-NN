@@ -84,32 +84,35 @@ print("nb trainable param", model_gcn.get_nb_trainable_params(), flush=True)
 # Train
 for epoch in range(1, nb_epochs+1):
     for n, data in enumerate(train_loader):
-        ims, gt_points_list, gt_normals_list = data
+        ims, gt_points, gt_normals = data
         ims = np.transpose(ims, (1, 0, 2, 3, 4))
-        gt_points_list = np.transpose(gt_points_list, (1, 0, 2, 3))
-        gt_normals_list = np.transpose(gt_normals_list, (1, 0, 2, 3))
-
-        # TODO Implement Partition context-query
 
         if use_cuda:
             ims = ims.cuda()
-            gt_points_list = gt_points_list.cuda()
-            gt_normals_list = gt_normals_list.cuda()
+            gt_points = gt_points.cuda()
+            gt_normals = gt_normals.cuda()
+
+        m, b, *x_dims = ims.shape
+        indices = np.arange(m)
+        context_idx, query_idx = indices[:-1], indices[-1]
+        context_ims = ims[context_idx]
+        query_ims = ims[query_idx]
 
         # Forward
         graph.reset()
         optimizer.zero_grad()
-        pools = []
-        for i in range(5):
-            pools.append(FeaturePooling(ims[i]))
-
-        pred_points, kl = model_gcn(graph, pools)
+        pred_points, x_mu, kl = model_gcn(context_ims, context_views, query_ims, query_views, graph) #TODO Viewpoints
 
         # Loss
-        loss = loss_function(pred_points, gt_points_list[0].squeeze(),
-                                          gt_normals_list[0].squeeze(), graph)
+        loss = loss_function(pred_points, gt_points.squeeze(),
+                                          gt_normals.squeeze(), graph)
 
-        # TODO add kl loss once we have viewpoint
+        ll = Normal(x_mu, sigma).log_prob(query_ims)
+
+        likelihood     = torch.mean(torch.sum(ll, dim=[1, 2, 3]))
+        kl_divergence  = torch.mean(torch.sum(kl, dim=[1, 2, 3]))
+        elbo = likelihood - kl_divergence
+        loss = loss - elbo * 1e-4
 
         # Backward
         loss.backward()
