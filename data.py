@@ -9,9 +9,10 @@ class CustomDatasetFolder(torch.utils.data.Dataset):
     '''
     Data reader
     '''
-    def __init__(self, root, extensions, print_ref=False):
+    def __init__(self, root, extensions, dimension, print_ref=False):
         self.samples = self._make_dataset(root, extensions)
         self.root = root
+        self.dimension = dimension
         if len(self.samples) == 0:
             raise(RuntimeError("Found 0 files in subfolders of: " + root + "\n"
                                "Supported extensions are: " + ",".join(extensions)))
@@ -40,8 +41,13 @@ class CustomDatasetFolder(torch.utils.data.Dataset):
     def _loader(self, path):
         if self.print_ref:
             print(path)
+        stl_indices = np.load(self.root + 'state_files/asteroid_choice.npy')
+        stl_index = int(path[-8:-5])
+        orbits_pos = np.load(self.root + 'state_files/orbits_positions.npy')
+        orbits_att = np.load(self.root + 'state_files/orbits_attitudes.npy')
         ims = []
-        for i in range(40):
+        viewpoints = []
+        for i in range(self.dimension):
             img_path = path
             if i < 10:
                 img_path += "0"
@@ -50,17 +56,20 @@ class CustomDatasetFolder(torch.utils.data.Dataset):
             im[np.where(im[:, :, 3] == 0)] = 255
             im = im[:, :, :3].astype(np.float32)
             ims.append(im)
-        stl_indices = np.load(self.root + 'state_files/asteroid_choice.npy')
-        stl_index = int(path[-8:-5])
+            viewpoint = np.zeros((1, 7))
+            viewpoint[:, :3] = orbits_pos[stl_index, i, :]
+            viewpoint[:, 3:] = orbits_att[stl_index, i, :]
+            viewpoints.append(viewpoint)
         stl_files = ['bennu.stl', 'itokawa.stl', 'mithra.stl', 'toutatis.stl']
         my_mesh = mesh.Mesh.from_file(self.root + 'stl_files/' + stl_files[stl_indices[stl_index]])
         normals = my_mesh.normals.astype(float)
         npy_files = ['bennu.npy', 'itokawa.npy', 'mithra.npy', 'toutatis.npy']
         points = np.load(self.root + 'stl_files/' + npy_files[stl_indices[stl_index]])
-        return np.asarray(ims), np.asarray(points), np.asarray(normals)
+        return np.asarray(ims), np.asarray(viewpoints), np.asarray(points), np.asarray(normals)
 
     def _make_dataset(self, dir, extensions):
         paths = []
+        stl_indices = np.load(dir + 'state_files/asteroid_choice.npy')
         dir = os.path.expanduser(dir)
         for target in sorted(os.listdir(dir)):
             d = os.path.join(dir, target)
@@ -71,8 +80,9 @@ class CustomDatasetFolder(torch.utils.data.Dataset):
                 for fname in sorted(fnames):
                     if self._has_file_allowed_extension(fname, extensions):
                         path = os.path.join(root, fname)
-                        item = path[:-6] # strip away **.stl
-                        if item != item_visited:
+                        item = path[:-6] # strip away **.png
+                        stl_index = int(item[-8:-5])
+                        if item != item_visited and stl_indices[stl_index] != 2:
                             item_visited = item
                             paths.append(item)
         return paths

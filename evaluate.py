@@ -6,7 +6,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 from graph import Graph
-from model import GNet
+from model import ReconstructionNet
 from pool import FeaturePooling
 from metrics import chamfer_loss, loss_function, f1_score
 from data import CustomDatasetFolder
@@ -26,16 +26,18 @@ parser.add_argument('--load', type=str, metavar='M',
 args = parser.parse_args()
 
 # Model
-model_gcn = GNet()
+nIms = 5
+model_gcn = ReconstructionNet(x_dim=3, v_dim=7, r_dim=256, h_dim=128, z_dim=64, i_dim=nIms, L=8)
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 state_dict = torch.load(args.load, map_location=device)
 model_gcn.load_state_dict(state_dict)
 
 # Turn batch norm into eval mode
-for child in model_gcn.feat_extr.children():
-    for ii in range(len(child)):
-        if type(child[ii]) == torch.nn.BatchNorm2d:
-            child[ii].track_running_stats = False
+# for child in model_gcn.feat_extr.children():
+#     for ii in range(len(child)):
+#         if type(child[ii]) == torch.nn.BatchNorm2d:
+#             child[ii].track_running_stats = False
+model_gcn.eval()
 
 # Cuda
 use_cuda = torch.cuda.is_available()
@@ -49,7 +51,7 @@ else:
 graph = Graph("./ellipsoid/init_info.pickle")
 
 # Data Loader
-folder = CustomDatasetFolder(args.data, extensions = ["dat"], print_ref=False)
+folder = CustomDatasetFolder(args.data, extensions = ["png"], dimension=nIms, print_ref=False)
 val_loader = torch.utils.data.DataLoader(folder, batch_size=1, shuffle=True)
 
 tot_loss_norm = 0
@@ -61,15 +63,24 @@ log_step = args.log_step
 show_img = args.show_img
 
 for n, data in enumerate(val_loader):
-    ims, gt_points_list, gt_normals_list = data
+    ims, view_points, gt_points, gt_normals = data
     ims = np.transpose(ims, (1, 0, 2, 3, 4))
-    gt_points_list = np.transpose(gt_points_list, (1, 0, 2, 3))
-    gt_normals_list = np.transpose(gt_normals_list, (1, 0, 2, 3))
+    view_points = np.transpose(view_points, (1, 0, 2, 3, 4)) #TODO
 
     if use_cuda:
         ims = ims.cuda()
-        gt_points_list = gt_points_list.cuda()
-        gt_normals_list = gt_normals_list.cuda()
+        view_points = view_points.cuda()
+        gt_points = gt_points.cuda()
+        gt_normals = gt_normals.cuda()
+
+    m, b, *x_dims = ims.shape
+    indices = np.arange(m)
+    np.random.shuffle(indices)
+    context_idx, query_idx = indices[:-1], indices[-1]
+    context_ims = ims[context_idx]
+    context_view_points = view_points[context_idx]
+    query_ims = ims[query_idx]
+    query_view_points = view_points[query_idx]
 
     # Show image
     if show_img:
@@ -82,18 +93,15 @@ for n, data in enumerate(val_loader):
 
     # Forward
     graph.reset()
-    pools = []
-    for i in range(5):
-        pools.append(FeaturePooling(ims[i]))
-    pred_points = model_gcn(graph, pools)
+    pred_points, x_mu, kl = model_gcn(context_ims, context_view_points, query_ims, query_view_points, graph)
 
     # Compute eval metrics
-    _, loss_norm = chamfer_loss(pred_points[-1], gt_points_list[0].squeeze(), normalized=True)
-    _, loss_unorm = chamfer_loss(pred_points[-1], gt_points_list[0].squeeze(), normalized=False)
+    _, loss_norm = chamfer_loss(pred_points[-1], gt_points.squeeze(), normalized=True)
+    _, loss_unorm = chamfer_loss(pred_points[-1], gt_points.squeeze(), normalized=False)
     tot_loss_norm += loss_norm.item()
     tot_loss_unorm += loss_unorm.item()
-    tot_f1_1 += f1_score(pred_points[-1], gt_points_list[0].squeeze(), threshold=tau)
-    tot_f1_2 += f1_score(pred_points[-1], gt_points_list[0].squeeze(), threshold=2*tau)
+    tot_f1_1 += f1_score(pred_points[-1], gt_points.squeeze(), threshold=tau)
+    tot_f1_2 += f1_score(pred_points[-1], gt_points.squeeze(), threshold=2*tau)
 
     # Logs
     if n%log_step == 0:
@@ -109,7 +117,7 @@ for n, data in enumerate(val_loader):
         graph.faces = graph.info[3][2]
         graph.to_obj(args.output + "plane_pred_block3_"
                         + str(n) + "_" + str(loss_norm.item()) + ".obj")
-        graph.vertices = gt_points_list[0][0, :, :]
+        graph.vertices = gt_points[0, :, :]
         graph.faces = []
         graph.to_obj(args.output + "plane_gt"
                         + str(n) + "_" + str(loss_norm.item()) + ".obj")

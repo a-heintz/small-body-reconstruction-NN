@@ -24,7 +24,7 @@ parser.add_argument('--lr', type=float, default=3e-5, metavar='LR',
                     help='learning rate (default: 3e-5)')
 parser.add_argument('--log_step', type=int, default=100, metavar='LS',
                     help='how many batches to wait before logging training status (default: 100)')
-parser.add_argument('--saving_step', type=int, default=1000, metavar='S',
+parser.add_argument('--saving_step', type=int, default=100, metavar='S',
                     help='how many batches to wait before saving model (default: 1000)')
 parser.add_argument('--experiment', type=str, default='./model/', metavar='E',
                     help='folder where model and optimizer are saved.')
@@ -39,12 +39,13 @@ use_cuda = torch.cuda.is_available()
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 # Model
+nIms = 5
 if args.load_model is not None: # Continue training
     state_dict = torch.load(args.load_model, map_location=device)
-    model_gcn = ReconstructionNet(x_dim=3, v_dim=7, r_dim=256, h_dim=128, z_dim=64, L=8)
+    model_gcn = ReconstructionNet(x_dim=3, v_dim=7, r_dim=256, h_dim=128, z_dim=64, i_dim=nIms, L=8)
     model_gcn.load_state_dict(state_dict)
 else:
-    model_gcn = ReconstructionNet(x_dim=3, v_dim=7, r_dim=256, h_dim=128, z_dim=64, L=8)
+    model_gcn = ReconstructionNet(x_dim=3, v_dim=7, r_dim=256, h_dim=128, z_dim=64, i_dim=nIms, L=8)
 
 # Optimizer
 if args.load_optimizer is not None:
@@ -59,7 +60,7 @@ model_gcn.train()
 graph = Graph("./ellipsoid/init_info.pickle")
 
 # Data Loader
-folder = CustomDatasetFolder(args.data, extensions = ["dat"])
+folder = CustomDatasetFolder(args.data, extensions = ["png"])
 train_loader = torch.utils.data.DataLoader(folder, batch_size=1, shuffle=True)
 
 # Param
@@ -84,24 +85,29 @@ print("nb trainable param", model_gcn.get_nb_trainable_params(), flush=True)
 # Train
 for epoch in range(1, nb_epochs+1):
     for n, data in enumerate(train_loader):
-        ims, gt_points, gt_normals = data
+        ims, viewpoints, gt_points, gt_normals = data
         ims = np.transpose(ims, (1, 0, 2, 3, 4))
+        viewpoints = np.transpose(viewpoints, (1, 0, 2, 3, 4)) #TODO
 
         if use_cuda:
             ims = ims.cuda()
+            viewpoints = viewpoints.cuda()
             gt_points = gt_points.cuda()
             gt_normals = gt_normals.cuda()
 
         m, b, *x_dims = ims.shape
         indices = np.arange(m)
+        np.random.shuffle(indices)
         context_idx, query_idx = indices[:-1], indices[-1]
         context_ims = ims[context_idx]
+        context_viewpoints = viewpoints[context_idx]
         query_ims = ims[query_idx]
+        query_viewpoints = viewpoints[query_idx]
 
         # Forward
         graph.reset()
         optimizer.zero_grad()
-        pred_points, x_mu, kl = model_gcn(context_ims, context_views, query_ims, query_views, graph) #TODO Viewpoints
+        pred_points, x_mu, kl = model_gcn(context_ims, context_viewpoints, query_ims, query_viewpoints, graph)
 
         # Loss
         loss = loss_function(pred_points, gt_points.squeeze(),

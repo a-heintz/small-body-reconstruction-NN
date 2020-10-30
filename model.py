@@ -361,44 +361,13 @@ class VGG16(nn.Module):
     def forward(self, x):
         return self.conv3(x), self.conv4(x), self.conv5(x)
 
-class ResNet18(nn.Module):
-    '''
-    Pretrained ResNet for image feature extraction
-    '''
-    def __init__(self):
-        super(ResNet18, self).__init__()
-        resnet = torchvision.models.resnet18(pretrained=True)
-
-        # Extract ResNet feature maps layer2, layer3, layer4
-        self.conv1 = resnet.conv1
-        self.bn1 = resnet.bn1
-        self.relu = resnet.relu
-        self.maxpool = resnet.maxpool
-        self.layer1 = resnet.layer1
-        self.layer2 = resnet.layer2
-        self.layer3 = resnet.layer3
-        self.layer4 = resnet.layer4
-
-    def forward(self, x):
-        x = self.conv1(x)
-        x = self.bn1(x)
-        x = self.relu(x)
-        x = self.maxpool(x)
-
-        x = self.layer1(x)
-        x_layer2 = self.layer2(x)
-        x_layer3 = self.layer3(x_layer2)
-        x_layer4 = self.layer4(x_layer3)
-        return x_layer2, x_layer3, x_layer4
-
 class DeformationBlock(nn.Module):
     '''
     Implement a mesh deformation block
     '''
     def __init__(self, feat_shape_dim):
         super(DeformationBlock, self).__init__()
-        # self.conv1 = GCNConv(1280 + feat_shape_dim, 1024)
-        self.conv1 = GCNConv(896 + feat_shape_dim, 1024)
+        self.conv1 = GCNConv(1280 + feat_shape_dim, 1024)
         self.conv21 = GCNConv(1024, 512)
         self.conv22 = GCNConv(512, 256)
         self.conv23 = GCNConv(256, 128)
@@ -424,13 +393,14 @@ class DeformationGNet(torch.nn.Module):
     '''
     Implement the full cascaded mesh deformation network
     '''
-    def __init__(self):
+    def __init__(self, dimension):
         super(DeformationGNet, self).__init__()
-        # self.feat_extr = VGG16()
-        self.feat_extr = ResNet18()
-        self.layer1 = DeformationBlock(3) # No shape features for block 1
-        self.layer2 = DeformationBlock(128)
-        self.layer3 = DeformationBlock(128)
+        self.feat_extr = VGG16()
+        # self.feat_extr = ResNet18()
+        self.layer1 = Block(3) # No shape features for block 1
+        self.layer2 = Block(128)
+        self.layer3 = Block(128)
+        self.dimension = dimension
 
     def forward(self, graph, pools):
         # Initial ellipsoid mesh
@@ -438,7 +408,7 @@ class DeformationGNet(torch.nn.Module):
 
         # Layer 1
         features = pools[0](elli_points, self.feat_extr)
-        for i in range(1, 5):
+        for i in range(1, self.dimension):
             features = features + pools[i](elli_points, self.feat_extr)
         input = torch.cat((features, elli_points), dim=1)
         x, coord_1 = self.layer1(input, graph.adjacency_mat[0])
@@ -450,7 +420,7 @@ class DeformationGNet(torch.nn.Module):
 
         # Layer 2
         features = pools[0](graph.vertices, self.feat_extr)
-        for i in range(1, 5):
+        for i in range(1, self.dimension):
             features = features + pools[i](graph.vertices, self.feat_extr)
         input = torch.cat((features, x), dim=1)
         x, coord_2 = self.layer2(input, graph.adjacency_mat[1])
@@ -462,7 +432,7 @@ class DeformationGNet(torch.nn.Module):
 
         # Layer 3
         features = pools[0](graph.vertices, self.feat_extr)
-        for i in range(1, 5):
+        for i in range(1, self.dimension):
             features = features + pools[i](graph.vertices, self.feat_extr)
         input = torch.cat((features, x), dim=1)
         x, coord_3 = self.layer3(input, graph.adjacency_mat[2])
@@ -481,10 +451,10 @@ class ReconstructionNet(torch.nn.Module):
     '''
     Implement the full end-to-end small body reconstruction network
     '''
-    def __init__(self, x_dim, v_dim, r_dim, h_dim, z_dim, L=12):
+    def __init__(self, x_dim, v_dim, r_dim, h_dim, z_dim, i_dim, L=12):
         super(ReconstructionNet, self).__init__()
         self.generator = GenerativeQueryNetwork(x_dim, v_dim, r_dim, h_dim, z_dim, L)
-        self.deformation = DeformationGNet()
+        self.deformation = DeformationGNet(i_dim)
 
     def forward(self, context_x, context_v, query_x, query_v, graph):
         _, m, _ = context_x.shape
