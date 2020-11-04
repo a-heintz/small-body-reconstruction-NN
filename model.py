@@ -397,9 +397,9 @@ class DeformationGNet(torch.nn.Module):
         super(DeformationGNet, self).__init__()
         self.feat_extr = VGG16()
         # self.feat_extr = ResNet18()
-        self.layer1 = Block(3) # No shape features for block 1
-        self.layer2 = Block(128)
-        self.layer3 = Block(128)
+        self.layer1 = DeformationBlock(3) # No shape features for block 1
+        self.layer2 = DeformationBlock(128)
+        self.layer3 = DeformationBlock(128)
         self.dimension = dimension
 
     def forward(self, graph, pools):
@@ -457,7 +457,7 @@ class ReconstructionNet(torch.nn.Module):
         self.deformation = DeformationGNet(i_dim)
 
     def forward(self, context_x, context_v, query_x, query_v, graph):
-        _, m, _ = context_x.shape
+        b, m, *x_dims = context_x.shape
         x_mu, _, kl = self.generator(context_x, context_v, query_x, query_v)
         pools = []
         for i in range(m):
@@ -467,3 +467,10 @@ class ReconstructionNet(torch.nn.Module):
         pred_points = self.deformation(graph, pools)
 
         return pred_points, x_mu, kl
+
+    def get_nb_trainable_params(self):
+        '''
+        Return the number of trainable parameters
+        '''
+        model_parameters = filter(lambda p: p.requires_grad, self.parameters())
+        return sum([np.prod(p.size()) for p in model_parameters])

@@ -14,6 +14,38 @@ from pool import FeaturePooling
 from metrics import loss_function
 from data import CustomDatasetFolder
 
+class Annealer(object):
+    def __init__(self, init, delta, steps):
+        self.init = init
+        self.delta = delta
+        self.steps = steps
+        self.s = 0
+        self.data = self.__repr__()
+        self.recent = init
+
+    def __repr__(self):
+        return {"init": self.init, "delta": self.delta, "steps": self.steps, "s": self.s}
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        self.s += 1
+        value = max(self.delta + (self.init - self.delta) * (1 - self.s / self.steps), self.delta)
+        self.recent = value
+        return value
+
+    def state_dict(self):
+        return {'init': self.init, 'delta': self.delta, 'steps': self.steps, 's': self.s, 'data': self.data, 'recent': self.recent}
+
+    def load_state_dict(self, state_dict):
+        self.init = state_dict['init']
+        self.delta = state_dict['delta']
+        self.steps = state_dict['steps']
+        self.s = state_dict['s']
+        self.data = state_dict['data']
+        self.recent = state_dict['recent']
+
 # Args
 parser = argparse.ArgumentParser(description='Pixel2Mesh training script')
 parser.add_argument('--data', type=str, default=None, metavar='D',
@@ -60,7 +92,7 @@ model_gcn.train()
 graph = Graph("./ellipsoid/init_info.pickle")
 
 # Data Loader
-folder = CustomDatasetFolder(args.data, extensions = ["png"])
+folder = CustomDatasetFolder(args.data, extensions = ["png"], dimension=nIms)
 train_loader = torch.utils.data.DataLoader(folder, batch_size=1, shuffle=True)
 
 # Param
@@ -82,18 +114,14 @@ else:
 
 print("nb trainable param", model_gcn.get_nb_trainable_params(), flush=True)
 
+sigma_scheme = Annealer(2.0, 0.7, 80000)
+
 # Train
 for epoch in range(1, nb_epochs+1):
     for n, data in enumerate(train_loader):
         ims, viewpoints, gt_points, gt_normals = data
         ims = np.transpose(ims, (1, 0, 2, 3, 4))
-        viewpoints = np.transpose(viewpoints, (1, 0, 2, 3, 4)) #TODO
-
-        if use_cuda:
-            ims = ims.cuda()
-            viewpoints = viewpoints.cuda()
-            gt_points = gt_points.cuda()
-            gt_normals = gt_normals.cuda()
+        viewpoints = np.transpose(viewpoints, (1, 0, 2, 3))
 
         m, b, *x_dims = ims.shape
         indices = np.arange(m)
@@ -104,6 +132,17 @@ for epoch in range(1, nb_epochs+1):
         query_ims = ims[query_idx]
         query_viewpoints = viewpoints[query_idx]
 
+        context_ims = np.transpose(context_ims, (1, 0, 2, 3, 4))
+        context_viewpoints = np.transpose(context_viewpoints, (1, 0, 2, 3))
+
+        if use_cuda:
+            context_ims = context_ims.cuda()
+            context_viewpoints = context_viewpoints.cuda()
+            query_ims = query_ims.cuda()
+            query_viewpoints = query_viewpoints.cuda()
+            gt_points = gt_points.cuda()
+            gt_normals = gt_normals.cuda()
+
         # Forward
         graph.reset()
         optimizer.zero_grad()
@@ -113,6 +152,7 @@ for epoch in range(1, nb_epochs+1):
         loss = loss_function(pred_points, gt_points.squeeze(),
                                           gt_normals.squeeze(), graph)
 
+        sigma = next(sigma_scheme)
         ll = Normal(x_mu, sigma).log_prob(query_ims)
 
         likelihood     = torch.mean(torch.sum(ll, dim=[1, 2, 3]))

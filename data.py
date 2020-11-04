@@ -24,7 +24,7 @@ class CustomDatasetFolder(torch.utils.data.Dataset):
 
     def __getitem__(self, index):
         path = self.samples[index]
-        ims, points, normals = self._loader(path)
+        ims, viewpoints, points, normals = self._loader(path)
 
         # Apply small transform
         ims = ims.astype(float)/255.0
@@ -32,6 +32,7 @@ class CustomDatasetFolder(torch.utils.data.Dataset):
         ims = (ims - self.mean)/self.std
 
         return torch.from_numpy(ims).float(), \
+               torch.from_numpy(viewpoints).float(), \
                torch.from_numpy(points).float(), \
                torch.from_numpy(normals).float()
 
