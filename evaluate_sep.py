@@ -4,12 +4,13 @@ import argparse
 import pickle
 import numpy as np
 import matplotlib.pyplot as plt
+from torchvision.utils import save_image
 
 from graph import Graph
 from model import GenerativeQueryNetwork, DeformationGNet
 from pool import FeaturePooling
 from metrics import chamfer_loss, loss_function, f1_score
-from data import CustomDatasetFolder
+from data import CustomDatasetFolder, get_random_viewpoint, vgg_normalize
 
 class Annealer(object):
     def __init__(self, init, delta, steps):
@@ -60,13 +61,13 @@ parser.add_argument('--load_gcn', type=str, metavar='M',
 args = parser.parse_args()
 
 # Model
-nIms = 15
-nQuery = 10
+nIms = 20
+nQuery = 5
 model_gqn = GenerativeQueryNetwork(x_dim=3, v_dim=7, r_dim=256, h_dim=128, z_dim=64, L=8)
 model_gcn = DeformationGNet(nIms)
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 gqn_state_dict = torch.load(args.load_gqn, map_location=device)
-model_gqn.load_state_dict(gqn_state_dict)
+model_gqn.load_state_dict(gqn_state_dict["model"])
 gcn_state_dict = torch.load(args.load_gcn, map_location=device)
 model_gcn.load_state_dict(gcn_state_dict)
 
@@ -76,6 +77,7 @@ model_gcn.eval()
 # Cuda
 use_cuda = torch.cuda.is_available()
 if use_cuda:
+    model_gqn.cuda()
     model_gcn.cuda()
     print('Using GPU')
 else:
@@ -86,7 +88,7 @@ graph = Graph("./ellipsoid/init_info.pickle")
 
 # Data Loader
 folder = CustomDatasetFolder(args.data, extensions = ["png"], dimension=nIms, print_ref=False)
-val_loader = torch.utils.data.DataLoader(folder, batch_size=1, shuffle=True)
+test_loader = torch.utils.data.DataLoader(folder, batch_size=1, shuffle=True)
 
 tot_loss_norm = 0
 tot_loss_unorm = 0
@@ -98,30 +100,15 @@ show_img = args.show_img
 
 sigma_scheme = Annealer(2.0, 0.7, 80000)
 
-for n, data in enumerate(val_loader):
-    ims, view_points, gt_points, gt_normals = data
-    ims = np.transpose(ims, (1, 0, 2, 3, 4))
-    viewpoints = np.transpose(viewpoints, (1, 0, 2, 3))
-
-    m, b, *x_dims = ims.shape
-    indices = np.arange(m)
-    np.random.shuffle(indices)
-    context_idx, query_idx = indices[:-1], indices[-1]
-    context_ims = ims[context_idx]
-    context_viewpoints = viewpoints[context_idx]
-    query_ims = ims[query_idx]
-    query_viewpoints = viewpoints[query_idx]
-
-    context_ims = np.transpose(context_ims, (1, 0, 2, 3, 4))
-    context_viewpoints = np.transpose(context_viewpoints, (1, 0, 2, 3))
-    ims = np.transpose(ims, (1, 0, 2, 3, 4))
-    viewpoints = np.transpose(viewpoints, (1, 0, 2, 3))
+for n, data in enumerate(test_loader):
+    ims, t_ims, viewpoints, gt_points, gt_normals = data
+    t_ims = np.transpose(t_ims, (1, 0, 2, 3, 4))
+    distance = np.linalg.norm(viewpoints[:,:,:3], axis=2)[0,0]
 
     if use_cuda:
-        context_ims = context_ims.cuda()
-        context_viewpoints = context_viewpoints.cuda()
-        query_ims = query_ims.cuda()
-        query_viewpoints = query_viewpoints.cuda()
+        ims = ims.cuda()
+        t_ims = t_ims.cuda()
+        viewpoints = viewpoints.cuda()
         gt_points = gt_points.cuda()
         gt_normals = gt_normals.cuda()
 
@@ -130,9 +117,15 @@ for n, data in enumerate(val_loader):
     sigma = next(sigma_scheme)
     pools = []
     for i in range(nIms):
-        pools.append(FeaturePooling(ims[i]))
+        pools.append(FeaturePooling(t_ims[i]))
+
     for i in range(nQuery):
-        x_mu = model_gqn.sample(ims, view_points, query_viewpoints, sigma) #TODO
+        query_viewpoint = get_random_viewpoint(distance).float().reshape((1, 7))
+        if use_cuda:
+            query_viewpoint = query_viewpoint.cuda()
+        x_mu = model_gqn.sample(ims, viewpoints, query_viewpoint, sigma)
+        # save_image(x_mu, args.output+"img_"+str(n)+"_"+str(i)+".png")
+        x_mu = vgg_normalize(x_mu, device)
         pools.append(FeaturePooling(x_mu))
     pred_points = model_gcn(graph, pools)
 
@@ -156,7 +149,15 @@ for n, data in enumerate(val_loader):
     if args.output is not None:
         graph.vertices = pred_points[5]
         graph.faces = graph.info[3][2]
-        graph.to_obj(args.output + "plane_pred_block3_"
+        graph.to_obj(args.output + "plane_pred_block3_3_"
+                        + str(n) + "_" + str(loss_norm.item()) + ".obj")
+        graph.vertices = pred_points[3]
+        graph.faces = graph.info[2][2]
+        graph.to_obj(args.output + "plane_pred_block3_2_"
+                        + str(n) + "_" + str(loss_norm.item()) + ".obj")
+        graph.vertices = pred_points[1]
+        graph.faces = graph.info[1][2]
+        graph.to_obj(args.output + "plane_pred_block3_1_"
                         + str(n) + "_" + str(loss_norm.item()) + ".obj")
         graph.vertices = gt_points[0, :, :]
         graph.faces = []

@@ -396,7 +396,6 @@ class DeformationGNet(torch.nn.Module):
     def __init__(self, dimension):
         super(DeformationGNet, self).__init__()
         self.feat_extr = VGG16()
-        # self.feat_extr = ResNet18()
         self.layer1 = DeformationBlock(3) # No shape features for block 1
         self.layer2 = DeformationBlock(128)
         self.layer3 = DeformationBlock(128)
