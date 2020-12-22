@@ -49,20 +49,23 @@ class CustomDatasetFolder(torch.utils.data.Dataset):
         stl_index = int(path[-8:-5])
         orbits_pos = np.load(self.root + 'state_files/orbits_positions.npy')
         orbits_att = np.load(self.root + 'state_files/orbits_attitudes.npy')
+        img_indices = np.arange(40)
+        np.random.shuffle(img_indices)
         ims = []
         viewpoints = []
         for i in range(self.dimension):
+            ii = img_indices[i]
             img_path = path
-            if i < 10:
+            if ii < 10:
                 img_path += "0"
-            img_path += str(i) + ".png"
+            img_path += str(ii) + ".png"
             im = io.imread(img_path)
             im[np.where(im[:, :, 3] == 0)] = 255
             im = im[:, :, :3].astype(np.float32)
             ims.append(im)
             viewpoint = np.zeros(7)
-            viewpoint[:3] = orbits_pos[stl_index, i, :]
-            viewpoint[3:] = orbits_att[stl_index, i, :]
+            viewpoint[:3] = orbits_pos[stl_index, ii, :]
+            viewpoint[3:] = orbits_att[stl_index, ii, :]
             viewpoints.append(viewpoint)
         stl_files = ['bennu.stl', 'itokawa.stl', 'mithra.stl', 'toutatis.stl']
         my_mesh = mesh.Mesh.from_file(self.root + 'stl_files/' + stl_files[stl_indices[stl_index]])
@@ -87,6 +90,7 @@ class CustomDatasetFolder(torch.utils.data.Dataset):
                         item = path[:-6] # strip away **.png
                         stl_index = int(item[-8:-5])
                         if item != item_visited and stl_indices[stl_index] != 2:
+                        # if item != item_visited:
                             item_visited = item
                             paths.append(item)
         return paths
@@ -160,8 +164,10 @@ def get_random_viewpoint(distance):
   arr = np.hstack((pos, att))
   return torch.from_numpy(arr)
 
-def vgg_normalize(img, device):
+def vgg_transform(img):
+    img = img.detach().cpu()
+    img = img.numpy().astype(float)/255.0
     # Normalization for VGG
-    mean = torch.from_numpy(np.array([0.485, 0.456, 0.406]).reshape((-1, 1, 1))).to(device)
-    std = torch.from_numpy(np.array([0.229, 0.224, 0.225]).reshape((-1, 1, 1))).to(device)
-    return (img - mean)/std
+    mean = np.array([0.485, 0.456, 0.406]).reshape((-1, 1, 1))
+    std = np.array([0.229, 0.224, 0.225]).reshape((-1, 1, 1))
+    return torch.from_numpy((img - mean)/std)

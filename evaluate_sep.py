@@ -9,8 +9,8 @@ from torchvision.utils import save_image
 from graph import Graph
 from model import GenerativeQueryNetwork, DeformationGNet
 from pool import FeaturePooling
-from metrics import chamfer_loss, loss_function, f1_score
-from data import CustomDatasetFolder, get_random_viewpoint, vgg_normalize
+from metrics import chamfer_loss, loss_function, f1_score, rms_loss
+from data import CustomDatasetFolder, get_random_viewpoint, vgg_transform
 
 class Annealer(object):
     def __init__(self, init, delta, steps):
@@ -61,8 +61,8 @@ parser.add_argument('--load_gcn', type=str, metavar='M',
 args = parser.parse_args()
 
 # Model
-nIms = 20
-nQuery = 5
+nIms = 25
+nQuery = 10
 model_gqn = GenerativeQueryNetwork(x_dim=3, v_dim=7, r_dim=256, h_dim=128, z_dim=64, L=8)
 model_gcn = DeformationGNet(nIms)
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -97,17 +97,30 @@ tot_f1_2 = 0
 tau = 1e-4
 log_step = args.log_step
 show_img = args.show_img
+tot_rms = 0
 
 sigma_scheme = Annealer(2.0, 0.7, 80000)
 
 for n, data in enumerate(test_loader):
     ims, t_ims, viewpoints, gt_points, gt_normals = data
     t_ims = np.transpose(t_ims, (1, 0, 2, 3, 4))
-    distance = np.linalg.norm(viewpoints[:,:,:3], axis=2)[0,0]
+    distances = np.linalg.norm(viewpoints[:,:,:3], axis=2).flatten()
+    np.random.shuffle(distances)
+    viewpoints = np.transpose(viewpoints, (1, 0, 2))
+    m, b, h, w, c = t_ims.shape
+
+    new_t_ims = []
+    for i in range(nIms):
+        v = viewpoints[i].flatten()
+        v = np.tile(v, (b, h, w, 1))
+        im = np.concatenate((t_ims[i], v), axis=3)
+        new_t_ims.append(im)
+    new_t_ims = torch.from_numpy(np.asarray(new_t_ims))
+    viewpoints = np.transpose(viewpoints, (1, 0, 2))
 
     if use_cuda:
         ims = ims.cuda()
-        t_ims = t_ims.cuda()
+        new_t_ims = new_t_ims.cuda()
         viewpoints = viewpoints.cuda()
         gt_points = gt_points.cuda()
         gt_normals = gt_normals.cuda()
@@ -117,15 +130,19 @@ for n, data in enumerate(test_loader):
     sigma = next(sigma_scheme)
     pools = []
     for i in range(nIms):
-        pools.append(FeaturePooling(t_ims[i]))
+        pools.append(FeaturePooling(new_t_ims[i]))
 
     for i in range(nQuery):
-        query_viewpoint = get_random_viewpoint(distance).float().reshape((1, 7))
+        query_viewpoint = get_random_viewpoint(distances[i]).float().reshape((1, 7))
+        v = np.tile(query_viewpoint.flatten(), (1, h, w, 1))
         if use_cuda:
             query_viewpoint = query_viewpoint.cuda()
         x_mu = model_gqn.sample(ims, viewpoints, query_viewpoint, sigma)
-        # save_image(x_mu, args.output+"img_"+str(n)+"_"+str(i)+".png")
-        x_mu = vgg_normalize(x_mu, device)
+        save_image(x_mu, args.output+"img_"+str(n)+"_"+str(i)+".png")
+        x_mu = vgg_transform(x_mu)
+        x_mu = torch.from_numpy(np.concatenate((x_mu, v), axis=3))
+        if use_cuda:
+            x_mu = x_mu.cuda()
         pools.append(FeaturePooling(x_mu))
     pred_points = model_gcn(graph, pools)
 
@@ -138,27 +155,29 @@ for n, data in enumerate(test_loader):
     tot_f1_2 += f1_score(pred_points[-1], gt_points.squeeze(), threshold=2*tau)
 
     # Logs
-    if n%log_step == 0:
-        print("Batch", n)
-        print("Normalized Chamfer loss so far", tot_loss_norm/(n+1))
-        print("Unormalized Chamfer loss so far", tot_loss_unorm/(n+1))
-        print("F1 score (tau=1e-4)", tot_f1_1/(n+1))
-        print("F1 score (tau=2e-4)", tot_f1_2/(n+1))
+    print("Batch", n)
+    print("Normalized Chamfer loss", loss_norm.item())
+    print("Unormalized Chamfer loss", loss_unorm.item())
+    print("RMS loss", rms_loss(pred_points[-1], gt_points.squeeze()).item())
+    print("F1 score (tau=1e-4)", f1_score(pred_points[-1], gt_points.squeeze(), threshold=tau))
+    print("F1 score (tau=2e-4)", f1_score(pred_points[-1], gt_points.squeeze(), threshold=2*tau))
 
+    if n < 200:
+        tot_rms += rms_loss(pred_points[-1], gt_points.squeeze()).item()
     # Generate meshes
     if args.output is not None:
         graph.vertices = pred_points[5]
         graph.faces = graph.info[3][2]
-        graph.to_obj(args.output + "plane_pred_block3_3_"
+        graph.to_obj(args.output + "plane_pred_block3_"
                         + str(n) + "_" + str(loss_norm.item()) + ".obj")
-        graph.vertices = pred_points[3]
-        graph.faces = graph.info[2][2]
-        graph.to_obj(args.output + "plane_pred_block3_2_"
-                        + str(n) + "_" + str(loss_norm.item()) + ".obj")
-        graph.vertices = pred_points[1]
-        graph.faces = graph.info[1][2]
-        graph.to_obj(args.output + "plane_pred_block3_1_"
-                        + str(n) + "_" + str(loss_norm.item()) + ".obj")
+        # graph.vertices = pred_points[3]
+        # graph.faces = graph.info[2][2]
+        # graph.to_obj(args.output + "plane_pred_block3_2_"
+        #                 + str(n) + "_" + str(loss_norm.item()) + ".obj")
+        # graph.vertices = pred_points[1]
+        # graph.faces = graph.info[1][2]
+        # graph.to_obj(args.output + "plane_pred_block3_1_"
+        #                 + str(n) + "_" + str(loss_norm.item()) + ".obj")
         graph.vertices = gt_points[0, :, :]
         graph.faces = []
         graph.to_obj(args.output + "plane_gt"
@@ -169,3 +188,4 @@ print("Final Normalized Chamfer loss:", tot_loss_norm/(n+1))
 print("Final Unormalized Chamfer loss:", tot_loss_norm/(n+1))
 print("Final F1 score (tau=1e-4) :", tot_f1_1/(n+1))
 print("Final F1 score (tau=2e-4) :", tot_f1_2/(n+1))
+print("Average RMS Score : ", tot_rms/200)

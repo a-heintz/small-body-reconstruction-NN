@@ -58,6 +58,14 @@ def chamfer_loss(pred, gt, normalized=True):
     else:
         return min_idx, torch.sum(min_dist) + torch.sum(dist.min(dim=0)[0])
 
+def rms_loss(pred, gt):
+    '''
+    Compute the RMS error
+    '''
+    dist = pairwise_dist(pred, gt)
+    min_dist, min_idx = dist.min(dim=1)
+    return torch.sqrt(torch.mean(torch.square(min_dist))) + torch.sqrt(torch.mean(torch.square(dist.min(dim=0)[0])))
+
 def loss_function(preds, gt_points, gt_normals, graph):
     '''
     Compute the total loss for the three meshes

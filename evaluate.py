@@ -63,9 +63,9 @@ log_step = args.log_step
 show_img = args.show_img
 
 for n, data in enumerate(val_loader):
-    ims, view_points, gt_points, gt_normals = data
+    ims, _, view_points, gt_points, gt_normals = data
     ims = np.transpose(ims, (1, 0, 2, 3, 4))
-    viewpoints = np.transpose(viewpoints, (1, 0, 2, 3))
+    view_points = np.transpose(view_points, (1, 0, 2, 3))
 
     if use_cuda:
         ims = ims.cuda()
